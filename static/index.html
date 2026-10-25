@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Cullen - Media Culling Tool</title>
+  <style>
+    body { font-family: Arial, Helvetica, sans-serif; margin: 0; padding: 20px; }
+    a { color: #0066cc; cursor: pointer; text-decoration: none; }
+    a:hover { color: #0047b3; }
+    #nav { margin-bottom: 10px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    #nav button.active { background: #0066cc; color: #fff; border: 1px solid #0047b3; }
+    #list div { padding: 4px 0; }
+    .unsupported { color: #888; }
+    #viewer { position: fixed; inset: 0; background: #111; color: #eee; display: none; flex-direction: column; z-index: 10; }
+    #viewer.open { display: flex; }
+    #title { padding: 10px 16px; font-size: 14px; display: flex; justify-content: space-between; }
+    #stage { touch-action: none; flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; padding: 0 10px; }
+    #stage img, #stage video { max-width: 100%; max-height: 100%; }
+    #stage audio { width: 80%; }
+    #actions { display: flex; gap: 20px; padding: 16px; justify-content: center; }
+    #actions button { flex: 1; max-width: 300px; padding: 18px; font-size: 20px; font-weight: bold; border: 0; border-radius: 6px; color: #fff; cursor: pointer; }
+    #keep { background: #2e8b57; }
+    #discard { background: #c0392b; }
+    #actions button:disabled { opacity: .5; cursor: wait; }
+    #close { background: none; border: 0; color: #eee; font-size: 14px; cursor: pointer; }
+    @media (orientation: portrait), (max-width: 700px) {
+      body { padding: 12px; font-size: max(18px, 4.5vw); }
+      h1 { font-size: max(28px, 7vw); margin: 0 0 .4em; }
+      #nav { font-size: max(18px, 4.5vw); display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+      #nav button { font-size: inherit; padding: .4em .9em; }
+      #viewer { height: 100dvh; }
+      #title { font-size: max(16px, 4vw); padding: 10px 12px; gap: 10px; }
+      #close { font-size: inherit; padding: 8px; }
+      #stage { padding: 0; }
+      #actions { gap: 0; padding: 0; padding-bottom: env(safe-area-inset-bottom); }
+      #actions button { max-width: none; height: 11vh; min-height: 55px; border-radius: 0; font-size: 28px; }
+      #list div { padding: .55em 0; font-size: max(20px, 5vw); border-bottom: 1px solid #eee; overflow-wrap: anywhere; }
+      #list a { display: block; }
+    }
+  </style>
+</head>
+<body>
+  <h1>Cullen</h1>
+  <div id="nav"></div>
+  <hr>
+  <div id="list"></div>
+
+  <div id="viewer">
+    <div id="title"><span id="name"></span><button id="close">Close (Esc)</button></div>
+    <div id="stage"></div>
+    <div id="actions">
+      <button id="discard">Discard</button>
+      <button id="keep">Keep</button>
+    </div>
+  </div>
+
+  <script>
+    // The page is served from <baseURL>/, so relative URLs resolve under it.
+    let currentPath = '';
+    let files = [];   // supported media in current directory
+    let index = -1;
+    let busy = false;
+    const $ = (id) => document.getElementById(id);
+
+    function mediaURL(p) {
+      return 'media/' + p.split('/').map(encodeURIComponent).join('/');
+    }
+
+    let entries = []; // raw listing of the current directory
+    let sortBy = localStorage.getItem('cullen.sortBy') === 'name' ? 'name' : 'modified';
+    let sortDir = localStorage.getItem('cullen.sortDir') === 'asc' ? 'asc' : 'desc';
+
+    function sorted(data) {
+      const dir = sortDir === 'asc' ? 1 : -1;
+      const byName = (a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+      return [...data].sort((a, b) => {
+        if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
+        const c = sortBy === 'modified' ? (a.modified - b.modified) || byName(a, b) : byName(a, b);
+        return c * dir;
+      });
+    }
+
+    async function list(path = '') {
+      const res = await fetch('api/list?path=' + encodeURIComponent(path));
+      if (!res.ok) { alert(await res.text()); return; }
+      entries = await res.json();
+      currentPath = path;
+      render();
+    }
+
+    function setSort(by, dir) {
+      sortBy = by; sortDir = dir;
+      localStorage.setItem('cullen.sortBy', by);
+      localStorage.setItem('cullen.sortDir', dir);
+      render();
+    }
+
+    function render() {
+      const data = sorted(entries);
+      files = data.filter(f => !f.is_dir && f.type); // culling follows this order
+      const path = currentPath;
+
+      const nav = $('nav');
+      nav.replaceChildren();
+      const strong = document.createElement('strong');
+      strong.textContent = '/' + path;
+      nav.append(strong);
+      if (path) {
+        const up = document.createElement('button');
+        up.textContent = 'Up';
+        up.onclick = () => list(path.split('/').slice(0, -1).join('/'));
+        nav.append(up);
+      }
+      for (const [v, t] of [['modified', 'Modified'], ['name', 'Name']]) {
+        const btn = document.createElement('button');
+        const active = v === sortBy;
+        btn.textContent = t + (active ? (sortDir === 'asc' ? ' ↑' : ' ↓') : '');
+        btn.title = active ? 'Toggle sort direction' : 'Sort by ' + t.toLowerCase();
+        if (active) btn.className = 'active';
+        btn.onclick = () => setSort(v, active && sortDir === 'desc' ? 'asc' : active ? 'desc' : sortDir);
+        nav.append(btn);
+      }
+
+      const box = $('list');
+      box.replaceChildren();
+      const icons = { image: '🖼️', video: '🎬', audio: '🎵' };
+      for (const f of data) {
+        const row = document.createElement('div');
+        if (f.is_dir) {
+          const a = document.createElement('a');
+          a.textContent = '📁 ' + f.name;
+          a.onclick = () => list(f.rel_path);
+          row.append(a);
+        } else if (f.type) {
+          const a = document.createElement('a');
+          a.textContent = icons[f.type] + ' ' + f.name;
+          a.onclick = () => cull(files.findIndex(x => x.rel_path === f.rel_path));
+          row.append(a);
+        } else {
+          row.className = 'unsupported';
+          row.textContent = f.name;
+        }
+        box.append(row);
+      }
+      if (!data.length) box.textContent = '(empty folder)';
+    }
+
+    function closeViewer() {
+      $('stage').replaceChildren(); // stops playback
+      $('viewer').classList.remove('open');
+      index = -1;
+      list(currentPath);
+    }
+
+    function cull(i) {
+      if (i < 0 || i >= files.length) { closeViewer(); return; }
+      index = i;
+      const f = files[i];
+      $('name').textContent = `${f.name}  (${i + 1} / ${files.length})`;
+      let el;
+      if (f.type === 'image') {
+        el = document.createElement('img');
+        el.alt = f.name;
+      } else {
+        el = document.createElement(f.type);
+        el.controls = true;
+        el.autoplay = true;
+      }
+      el.src = mediaURL(f.rel_path);
+      $('stage').replaceChildren(el);
+      $('viewer').classList.add('open');
+    }
+
+    function keep() {
+      if (busy || index < 0) return;
+      cull(index + 1);
+    }
+
+    async function discard() {
+      if (busy || index < 0) return;
+      busy = true;
+      $('keep').disabled = $('discard').disabled = true;
+      const f = files[index];
+      try {
+        const res = await fetch('api/delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: f.rel_path })
+        });
+        if (!res.ok) throw new Error(await res.text());
+        files.splice(index, 1);
+        cull(index); // next file now occupies this index
+      } catch (e) {
+        alert('Delete failed: ' + e.message);
+      } finally {
+        busy = false;
+        $('keep').disabled = $('discard').disabled = false;
+      }
+    }
+
+    $('keep').onclick = keep;
+    $('discard').onclick = discard;
+    $('close').onclick = closeViewer;
+    function prev() {
+      if (busy || index < 0) return;
+      cull(index - 1); // past the first file returns to the list
+    }
+
+    // Swipe: drag left = next, drag right = previous, up = back to the list.
+    const SWIPE_MIN = 50;
+    let touch = null;
+    const stage = $('stage');
+    stage.addEventListener('touchstart', (e) => {
+      touch = null;
+      if (e.touches.length !== 1) return;
+      const t = e.touches[0];
+      const m = e.target;
+      // Leave the bottom strip of audio/video alone so the seek bar still works.
+      if ((m.tagName === 'VIDEO' || m.tagName === 'AUDIO') &&
+          t.clientY > m.getBoundingClientRect().bottom - 80) return;
+      touch = { x: t.clientX, y: t.clientY };
+    }, { passive: true });
+    stage.addEventListener('touchend', (e) => {
+      if (!touch || index < 0) return;
+      const t = e.changedTouches[0];
+      const dx = t.clientX - touch.x, dy = t.clientY - touch.y;
+      touch = null;
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < SWIPE_MIN) return;
+      if (Math.abs(dx) > Math.abs(dy)) {
+        if (dx < 0) keep(); else prev();
+      } else if (dy < 0) {
+        closeViewer();
+      }
+    }, { passive: true });
+    stage.addEventListener('touchcancel', () => { touch = null; }, { passive: true });
+
+    document.addEventListener('keydown', (e) => {
+      if (index < 0) return;
+      if (e.key === 'Escape') closeViewer();
+      else if (e.key === 'ArrowLeft') prev();
+      else if (e.key === 'ArrowRight') keep();
+      else if (e.key === 'Delete') discard();
+    });
+
+    list();
+  </script>
+</body>
+</html>
