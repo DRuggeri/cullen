@@ -81,12 +81,40 @@
       });
     }
 
-    async function list(path = '') {
+    // The current folder lives in the URL hash (#/a/b) so it can be deep linked.
+    function pathToHash(p) {
+      return p ? '#/' + p.split('/').map(encodeURIComponent).join('/') : '#/';
+    }
+
+    function hashToPath() {
+      try {
+        return location.hash.replace(/^#\/?/, '').split('/').filter(Boolean).map(decodeURIComponent).join('/');
+      } catch (e) {
+        return '';
+      }
+    }
+
+    async function load(path) {
       const res = await fetch('api/list?path=' + encodeURIComponent(path));
-      if (!res.ok) { alert(await res.text()); return; }
+      if (!res.ok) return false;
       entries = await res.json();
       currentPath = path;
       render();
+      return true;
+    }
+
+    // User-initiated navigation: adds a history entry.
+    async function list(path = '') {
+      if (!await load(path)) { alert('Cannot open folder: /' + path); return; }
+      if (location.hash !== pathToHash(path)) history.pushState(null, '', pathToHash(path));
+    }
+
+    // URL-driven navigation (initial load, back/forward, edited hash).
+    async function loadFromURL() {
+      const path = hashToPath();
+      if (await load(path)) return;
+      await load('');
+      history.replaceState(null, '', pathToHash(''));
     }
 
     function setSort(by, dir) {
@@ -146,16 +174,31 @@
       if (!data.length) box.textContent = '(empty folder)';
     }
 
-    function closeViewer() {
+    // The viewer owns one history entry so the browser back button closes it.
+    function hideViewer() {
+      resetZoom();
       $('stage').replaceChildren(); // stops playback
       $('viewer').classList.remove('open');
       index = -1;
-      list(currentPath);
     }
+
+    function closeViewer() {
+      if (index < 0) return;
+      if (history.state && history.state.viewer) history.back(); // popstate hides it
+      else { hideViewer(); load(currentPath); }
+    }
+
+    window.addEventListener('popstate', () => {
+      if (index >= 0) hideViewer();
+      loadFromURL();
+    });
+    if (history.state && history.state.viewer) history.replaceState(null, '');
 
     function cull(i) {
       if (i < 0 || i >= files.length) { closeViewer(); return; }
+      if (index < 0) history.pushState({ viewer: true }, '');
       index = i;
+      resetZoom();
       const f = files[i];
       $('name').textContent = `${f.name}  (${i + 1} / ${files.length})`;
       let el;
@@ -172,9 +215,36 @@
       $('viewer').classList.add('open');
     }
 
-    function keep() {
+    function next() {
       if (busy || index < 0) return;
-      cull(index + 1);
+      cull(index + 1); // past the last file returns to the list
+    }
+
+    // Keep either just advances ("next") or moves the file away ("move"),
+    // as configured by the server's --keep flag.
+    let keepMode = 'next';
+
+    async function keep() {
+      if (busy || index < 0) return;
+      if (keepMode !== 'move') { next(); return; }
+      busy = true;
+      $('keep').disabled = $('discard').disabled = true;
+      try {
+        const res = await fetch('api/keep', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: files[index].rel_path })
+        });
+        if (!res.ok) throw new Error(await res.text());
+        files.splice(index, 1);
+        busy = false;
+        cull(index); // next file now occupies this index
+      } catch (e) {
+        alert('Keep failed: ' + e.message);
+      } finally {
+        busy = false;
+        $('keep').disabled = $('discard').disabled = false;
+      }
     }
 
     async function discard() {
@@ -207,43 +277,155 @@
       cull(index - 1); // past the first file returns to the list
     }
 
-    // Swipe: drag left = next, drag right = previous, up = back to the list.
-    const SWIPE_MIN = 50;
-    let touch = null;
+    // Touch: one finger swipes (left = next, right = previous, up = list) at 1x
+    // zoom or pans when zoomed; two fingers pinch-zoom around their midpoint.
+    const SWIPE_MIN = 50, MIN_ZOOM = 0.25, MAX_ZOOM = 20; // 1x = fitted to the screen
+    let touch = null, pan = null, pinch = null;
+    let zoom = { s: 1, x: 0, y: 0 };
     const stage = $('stage');
+
+    function zoomTarget() {
+      const el = stage.firstElementChild;
+      return el && el.tagName !== 'AUDIO' ? el : null;
+    }
+
+    function applyZoom() {
+      const el = zoomTarget();
+      if (!el) return;
+      const { s } = zoom;
+      // Keep the scaled media covering the stage; center it where it is smaller.
+      const mx = Math.max(0, (el.offsetWidth * s - stage.clientWidth) / 2);
+      const my = Math.max(0, (el.offsetHeight * s - stage.clientHeight) / 2);
+      zoom.x = Math.min(mx, Math.max(-mx, zoom.x));
+      zoom.y = Math.min(my, Math.max(-my, zoom.y));
+      el.style.transformOrigin = 'center';
+      el.style.transform = s === 1 ? '' : `translate(${zoom.x}px, ${zoom.y}px) scale(${s})`;
+    }
+
+    function resetZoom() {
+      zoom = { s: 1, x: 0, y: 0 };
+      touch = pan = pinch = mousePan = null;
+      stage.style.cursor = '';
+    }
+
+    // Offsets are relative to the stage center, which is the scale origin.
+    function pinchState(e) {
+      const [a, b] = [e.touches[0], e.touches[1]];
+      const r = stage.getBoundingClientRect();
+      return {
+        d: Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY),
+        cx: (a.clientX + b.clientX) / 2 - (r.left + r.width / 2),
+        cy: (a.clientY + b.clientY) / 2 - (r.top + r.height / 2),
+      };
+    }
+
     stage.addEventListener('touchstart', (e) => {
-      touch = null;
-      if (e.touches.length !== 1) return;
+      touch = pan = null;
+      if (index < 0) return;
+      if (e.touches.length === 2) {
+        if (!zoomTarget()) return;
+        const p = pinchState(e);
+        pinch = { ...p, s0: zoom.s, x0: zoom.x, y0: zoom.y };
+        return;
+      }
+      if (e.touches.length !== 1 || pinch) return;
       const t = e.touches[0];
       const m = e.target;
       // Leave the bottom strip of audio/video alone so the seek bar still works.
       if ((m.tagName === 'VIDEO' || m.tagName === 'AUDIO') &&
           t.clientY > m.getBoundingClientRect().bottom - 80) return;
-      touch = { x: t.clientX, y: t.clientY };
+      if (zoom.s > 1) pan = { x: t.clientX, y: t.clientY, x0: zoom.x, y0: zoom.y };
+      else touch = { x: t.clientX, y: t.clientY };
     }, { passive: true });
+
+    stage.addEventListener('touchmove', (e) => {
+      if (pinch && e.touches.length === 2) {
+        const p = pinchState(e);
+        const s = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, pinch.s0 * p.d / pinch.d));
+        // Keep the content point under the initial midpoint under the current one.
+        const k = s / pinch.s0;
+        zoom = { s, x: p.cx - (pinch.cx - pinch.x0) * k, y: p.cy - (pinch.cy - pinch.y0) * k };
+        applyZoom();
+      } else if (pan && e.touches.length === 1) {
+        const t = e.touches[0];
+        zoom.x = pan.x0 + t.clientX - pan.x;
+        zoom.y = pan.y0 + t.clientY - pan.y;
+        applyZoom();
+      }
+    }, { passive: true });
+
     stage.addEventListener('touchend', (e) => {
+      if (pinch) {
+        if (e.touches.length < 2) {
+          pinch = null;
+          if (Math.abs(zoom.s - 1) < 0.02) zoom = { s: 1, x: 0, y: 0 };
+          applyZoom();
+          // Continue as a pan with the finger that is still down.
+          if (e.touches.length === 1 && zoom.s > 1) {
+            const t = e.touches[0];
+            pan = { x: t.clientX, y: t.clientY, x0: zoom.x, y0: zoom.y };
+          }
+        }
+        return;
+      }
+      if (pan) { if (e.touches.length === 0) pan = null; return; }
       if (!touch || index < 0) return;
       const t = e.changedTouches[0];
       const dx = t.clientX - touch.x, dy = t.clientY - touch.y;
       touch = null;
       if (Math.max(Math.abs(dx), Math.abs(dy)) < SWIPE_MIN) return;
       if (Math.abs(dx) > Math.abs(dy)) {
-        if (dx < 0) keep(); else prev();
+        if (dx < 0) next(); else prev();
       } else if (dy < 0) {
         closeViewer();
       }
     }, { passive: true });
-    stage.addEventListener('touchcancel', () => { touch = null; }, { passive: true });
+
+    stage.addEventListener('touchcancel', () => { touch = pan = pinch = null; }, { passive: true });
+
+    // Mouse: wheel zooms around the cursor, middle-button drag pans.
+    stage.addEventListener('wheel', (e) => {
+      if (index < 0 || !zoomTarget()) return;
+      e.preventDefault();
+      const r = stage.getBoundingClientRect();
+      const px = e.clientX - (r.left + r.width / 2);
+      const py = e.clientY - (r.top + r.height / 2);
+      const s = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, zoom.s * Math.exp(-e.deltaY * (e.deltaMode ? 0.05 : 0.0015))));
+      const k = s / zoom.s;
+      zoom = Math.abs(s - 1) < 0.02 ? { s: 1, x: 0, y: 0 } : { s, x: px - (px - zoom.x) * k, y: py - (py - zoom.y) * k };
+      applyZoom();
+    }, { passive: false });
+
+    let mousePan = null;
+    stage.addEventListener('mousedown', (e) => {
+      if (e.button !== 1 || index < 0) return;
+      e.preventDefault(); // no browser autoscroll
+      mousePan = { x: e.clientX, y: e.clientY, x0: zoom.x, y0: zoom.y };
+      stage.style.cursor = 'grabbing';
+    });
+    window.addEventListener('mousemove', (e) => {
+      if (!mousePan) return;
+      zoom.x = mousePan.x0 + e.clientX - mousePan.x;
+      zoom.y = mousePan.y0 + e.clientY - mousePan.y;
+      applyZoom();
+    });
+    window.addEventListener('mouseup', (e) => {
+      if (e.button !== 1 || !mousePan) return;
+      mousePan = null;
+      stage.style.cursor = '';
+    });
+    stage.addEventListener('auxclick', (e) => { if (e.button === 1) e.preventDefault(); });
 
     document.addEventListener('keydown', (e) => {
       if (index < 0) return;
       if (e.key === 'Escape') closeViewer();
       else if (e.key === 'ArrowLeft') prev();
-      else if (e.key === 'ArrowRight') keep();
+      else if (e.key === 'ArrowRight') next();
       else if (e.key === 'Delete') discard();
     });
 
-    list();
+    fetch('api/config').then(r => r.json()).then(c => { keepMode = c.keep; }).catch(() => {})
+      .finally(loadFromURL);
   </script>
 </body>
 </html>

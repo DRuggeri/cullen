@@ -4,6 +4,8 @@ import (
 	"embed"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -60,6 +62,8 @@ func startServer() error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET "+baseURL+"/api/list", listHandler)
 	mux.HandleFunc("POST "+baseURL+"/api/delete", deleteHandler)
+	mux.HandleFunc("POST "+baseURL+"/api/keep", keepHandler)
+	mux.HandleFunc("GET "+baseURL+"/api/config", configHandler)
 	mux.HandleFunc("GET "+baseURL+"/media/{path...}", mediaHandler)
 
 	subFS, err := fs.Sub(staticFiles, "static")
@@ -167,4 +171,108 @@ func deleteHandler(w http.ResponseWriter, r *http.Request) {
 	slog.Info("deleted", "path", abs)
 	w.Header().Set("Content-Type", "application/json")
 	w.Write([]byte(`{"status":"ok"}`))
+}
+
+func configHandler(w http.ResponseWriter, r *http.Request) {
+	mode := "next"
+	if keepDir != "" {
+		mode = "move"
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"keep": mode})
+}
+
+func keepHandler(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		Path string `json:"path"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&payload); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if keepDir == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"status":"ok"}`))
+		return
+	}
+	abs, err := resolve(payload.Path)
+	if err != nil {
+		http.Error(w, "invalid path", http.StatusBadRequest)
+		return
+	}
+	st, err := os.Lstat(abs)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	if !st.Mode().IsRegular() || mediaType(abs) == "" {
+		http.Error(w, "only supported media files can be moved", http.StatusBadRequest)
+		return
+	}
+	dst, err := moveFile(abs, keepDir)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	slog.Info("kept", "from", abs, "to", dst)
+	w.Header().Set("Content-Type", "application/json")
+	w.Write([]byte(`{"status":"ok"}`))
+}
+
+// moveFile moves src into dir without overwriting: name collisions get a
+// numeric suffix. Falls back to copy+delete when a hard link is not possible
+// (e.g. across filesystems).
+func moveFile(src, dir string) (string, error) {
+	base := filepath.Base(src)
+	ext := filepath.Ext(base)
+	stem := strings.TrimSuffix(base, ext)
+	for i := 0; i < 10000; i++ {
+		name := base
+		if i > 0 {
+			name = fmt.Sprintf("%s-%d%s", stem, i, ext)
+		}
+		dst := filepath.Join(dir, name)
+		err := os.Link(src, dst)
+		if err == nil {
+			return dst, os.Remove(src)
+		}
+		if errors.Is(err, os.ErrExist) {
+			continue
+		}
+		// Link unsupported here: copy instead.
+		if err := copyExclusive(src, dst); err != nil {
+			if errors.Is(err, os.ErrExist) {
+				continue
+			}
+			return "", err
+		}
+		return dst, os.Remove(src)
+	}
+	return "", errors.New("could not find a free destination name")
+}
+
+func copyExclusive(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	st, err := in.Stat()
+	if err != nil {
+		return err
+	}
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, st.Mode().Perm())
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		os.Remove(dst)
+		return err
+	}
+	if err := out.Close(); err != nil {
+		os.Remove(dst)
+		return err
+	}
+	return os.Chtimes(dst, st.ModTime(), st.ModTime())
 }
