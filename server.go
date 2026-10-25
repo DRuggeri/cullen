@@ -161,25 +161,36 @@ func deleteHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !st.Mode().IsRegular() || mediaType(abs) == "" {
-		http.Error(w, "only supported media files can be deleted", http.StatusBadRequest)
+		http.Error(w, "only supported media files can be discarded", http.StatusBadRequest)
 		return
 	}
-	if err := os.Remove(abs); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+	if discardDir != "" {
+		dst, err := moveFile(abs, discardDir)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		slog.Info("discarded (moved)", "from", abs, "to", dst)
+	} else {
+		if err := os.Remove(abs); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		slog.Info("deleted", "path", abs)
 	}
-	slog.Info("deleted", "path", abs)
 	w.Header().Set("Content-Type", "application/json")
 	w.Write([]byte(`{"status":"ok"}`))
 }
 
 func configHandler(w http.ResponseWriter, r *http.Request) {
-	mode := "next"
-	if keepDir != "" {
-		mode = "move"
+	mode := func(dir, def string) string {
+		if dir != "" {
+			return "move"
+		}
+		return def
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"keep": mode})
+	json.NewEncoder(w).Encode(map[string]string{"keep": mode(keepDir, "next"), "discard": mode(discardDir, "delete")})
 }
 
 func keepHandler(w http.ResponseWriter, r *http.Request) {

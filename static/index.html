@@ -262,7 +262,7 @@
         files.splice(index, 1);
         cull(index); // next file now occupies this index
       } catch (e) {
-        alert('Delete failed: ' + e.message);
+        alert("Discard failed: " + e.message);
       } finally {
         busy = false;
         $('keep').disabled = $('discard').disabled = false;

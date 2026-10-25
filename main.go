@@ -12,32 +12,33 @@ import (
 var baseDir string
 var listenAddr string
 var baseURL string
-var keepAction string
+var keepAction, discardAction string
 
-// keepDir is the destination for kept files; empty means Keep just advances.
-var keepDir string
+// Destinations for the Keep and Discard actions; empty means the default
+// behavior (Keep advances, Discard deletes).
+var keepDir, discardDir string
 
-func parseKeep(v string) error {
-	switch {
-	case v == "" || v == "next":
-		keepDir = ""
-		return nil
-	case strings.HasPrefix(v, "move:"):
-		dir, err := filepath.Abs(strings.TrimPrefix(v, "move:"))
+// parseAction validates an action flag value that is either the default word
+// or "move:/path/to/folder" and returns the destination ("" for the default).
+func parseAction(flag, v, def string) (string, error) {
+	if v == "" || v == def {
+		return "", nil
+	}
+	if dir, ok := strings.CutPrefix(v, "move:"); ok {
+		dir, err := filepath.Abs(dir)
 		if err != nil {
-			return err
+			return "", err
 		}
 		st, err := os.Stat(dir)
 		if err != nil {
-			return fmt.Errorf("keep destination: %w", err)
+			return "", fmt.Errorf("--%s destination: %w", flag, err)
 		}
 		if !st.IsDir() {
-			return fmt.Errorf("keep destination %s is not a directory", dir)
+			return "", fmt.Errorf("--%s destination %s is not a directory", flag, dir)
 		}
-		keepDir = dir
-		return nil
+		return dir, nil
 	}
-	return fmt.Errorf("invalid --keep %q: use \"next\" or \"move:/path/to/folder\"", v)
+	return "", fmt.Errorf("invalid --%s %q: use %q or \"move:/path/to/folder\"", flag, v, def)
 }
 
 func main() {
@@ -56,8 +57,12 @@ func main() {
 			if !st.IsDir() {
 				return fmt.Errorf("%s is not a directory", baseDir)
 			}
-			if err := parseKeep(keepAction); err != nil {
-				return err
+			var err2 error
+			if keepDir, err2 = parseAction("keep", keepAction, "next"); err2 != nil {
+				return err2
+			}
+			if discardDir, err2 = parseAction("discard", discardAction, "delete"); err2 != nil {
+				return err2
 			}
 			return startServer()
 		},
@@ -67,6 +72,7 @@ func main() {
 	rootCmd.Flags().StringVar(&listenAddr, "listen", ":8080", "Listen address of the server")
 	rootCmd.Flags().StringVar(&baseURL, "baseurl", "/cullen", "Base URL prefix for all endpoints")
 	rootCmd.Flags().StringVar(&keepAction, "keep", "next", `Action for Keep: "next" or "move:/path/to/folder"`)
+	rootCmd.Flags().StringVar(&discardAction, "discard", "delete", `Action for Discard: "delete" or "move:/path/to/folder"`)
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
