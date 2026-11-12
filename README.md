@@ -19,6 +19,7 @@ It is a single Go binary with the web UI embedded. There is no database and no e
 - Deep linking: the current folder is in the URL, and back/forward work.
 - Touch and mouse support: swipe gestures, pinch zoom and pan, mouse wheel zoom and middle-button pan.
 - Mobile-friendly layout with large tap targets.
+- Automatically follows the browser's light or dark color scheme.
 
 ## Requirements
 
