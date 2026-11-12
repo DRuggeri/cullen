@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title">
+  <title id="title">Cullen: film frame with slicing blade logo proposal</title>
+  <rect width="128" height="128" rx="26" fill="#102c43"/>
+  <rect x="20" y="23" width="88" height="82" rx="9" fill="#e9f4f6"/>
+  <rect x="37" y="31" width="54" height="66" rx="3" fill="#1b4c65"/>
+  <path d="M56 46v36l25-18Z" fill="#e9f4f6"/>
+  <path d="M26 33h6v9h-6zm0 17h6v9h-6zm0 17h6v9h-6zm0 17h6v9h-6zm70-51h6v9h-6zm0 17h6v9h-6zm0 17h6v9h-6zm0 17h6v9h-6z" fill="#1b4c65"/>
+  <path d="M5 73C39 67 78 46 115 30 88 55 50 83 7 82Z" fill="#45d0c0"/>
+</svg>
