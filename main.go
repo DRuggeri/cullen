@@ -13,10 +13,13 @@ var baseDir string
 var listenAddr string
 var baseURL string
 var keepAction, discardAction string
+var versionFlag bool
 
 // Destinations for the Keep and Discard actions; empty means the default
 // behavior (Keep advances, Discard deletes).
 var keepDir, discardDir string
+
+var Version = "testing"
 
 // parseAction validates an action flag value that is either the default word
 // or "move:/path/to/folder" and returns the destination ("" for the default).
@@ -45,7 +48,13 @@ func main() {
 	rootCmd := &cobra.Command{
 		Use:   "cullen",
 		Short: "Media culling tool",
+		Long:  "Media culling tool - Version: " + Version,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if versionFlag {
+				fmt.Println(Version)
+				os.Exit(0)
+			}
+
 			baseURL = strings.TrimRight(baseURL, "/")
 			if baseURL != "" && !strings.HasPrefix(baseURL, "/") {
 				baseURL = "/" + baseURL
@@ -73,6 +82,8 @@ func main() {
 	rootCmd.Flags().StringVar(&baseURL, "baseurl", "/cullen", "Base URL prefix for all endpoints")
 	rootCmd.Flags().StringVar(&keepAction, "keep", "next", `Action for Keep: "next" or "move:/path/to/folder"`)
 	rootCmd.Flags().StringVar(&discardAction, "discard", "delete", `Action for Discard: "delete" or "move:/path/to/folder"`)
+	rootCmd.Flags().BoolVar(&versionFlag, "version", false, "Print version and exit")
+
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

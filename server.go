@@ -82,7 +82,7 @@ func startServer() error {
 	})
 
 	srv := &http.Server{Addr: listenAddr, Handler: logged}
-	slog.Info("server starting", "address", listenAddr, "baseURL", baseURL, "path", baseDir)
+	slog.Info("server starting", "version", Version, "address", listenAddr, "baseURL", baseURL, "path", baseDir)
 	return srv.ListenAndServe()
 }
 
